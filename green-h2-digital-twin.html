@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Green H₂ Power Simulator — Integrated Digital Twin</title>
+<script src="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Cesium.js"></script>
+<link href="https://cesium.com/downloads/cesiumjs/releases/1.120/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Outfit:wght@300;500;700&display=swap');
+
+:root {
+  --bg: #04080f;
+  --card: rgba(6,18,34,0.92);
+  --border: rgba(0,242,255,0.25);
+  --cyan: #00f2ff;
+  --green: #39ff14;
+  --amber: #ffbe0b;
+  --red: #ff3a3a;
+  --purple: #b388ff;
+  --dim: #5a6e82;
+  --text: #d0dce8;
+  --radius: 8px;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Outfit', sans-serif;
+}
+
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body { width:100%; height:100%; overflow:hidden; background:var(--bg); color:var(--text); font-family:var(--sans); }
+
+/* ── LAYOUT ────────────────────────────────── */
+#app {
+  display: grid; width:100%; height:100%;
+  grid-template-columns: 320px 1fr 360px;
+  grid-template-rows: 1fr 200px;
+  gap: 0;
+}
+#cesiumContainer { grid-column:2; grid-row:1; }
+#left-panel { grid-column:1; grid-row:1/3; overflow-y:auto; border-right:1px solid var(--border); }
+#right-panel { grid-column:3; grid-row:1/3; overflow-y:auto; border-left:1px solid var(--border); }
+#bottom-strip { grid-column:2; grid-row:2; border-top:1px solid var(--border); display:flex; gap:0; }
+
+/* ── PANELS ────────────────────────────────── */
+.panel { background:var(--card); padding:14px 16px; }
+.panel-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding-bottom:10px; margin-bottom:12px;
+  border-bottom:1px solid var(--border);
+  font-family:var(--mono); font-size:11px; letter-spacing:1.5px;
+  color:var(--cyan); text-transform:uppercase;
+}
+.live-dot { color:var(--green); animation: blink 1s infinite; font-size:9px; }
+@keyframes blink { 50%{opacity:.25} }
+
+.section-label {
+  font-size:9px; letter-spacing:2px; text-transform:uppercase;
+  color:var(--dim); margin:14px 0 6px;
+  padding-left:7px; border-left:2px solid var(--cyan);
+}
+
+.stat { display:flex; justify-content:space-between; align-items:baseline; font-size:12px; margin:5px 0; }
+.val { font-family:var(--mono); font-weight:700; color:var(--green); }
+.unit { font-size:9px; color:var(--dim); margin-left:3px; }
+.val.amber { color:var(--amber); }
+.val.red { color:var(--red); }
+.val.cyan { color:var(--cyan); }
+.val.purple { color:var(--purple); }
+
+.bar-track { width:100%; height:5px; background:rgba(255,255,255,.07); border-radius:3px; margin:4px 0 2px; overflow:hidden; }
+.bar-fill { height:100%; border-radius:3px; transition:width .3s; }
+.bar-fill.cyan { background: linear-gradient(90deg,#004e5a,var(--cyan)); }
+.bar-fill.green { background: linear-gradient(90deg,#003a00,var(--green)); }
+.bar-fill.amber { background: linear-gradient(90deg,#3a2400,var(--amber)); }
+
+/* ── TABS ──────────────────────────────────── */
+.tab-bar { display:flex; gap:0; margin-bottom:12px; }
+.tab-btn {
+  flex:1; padding:7px 4px; border:none; background:transparent;
+  color:var(--dim); font-family:var(--mono); font-size:9.5px; letter-spacing:1px;
+  cursor:pointer; border-bottom:2px solid transparent; text-transform:uppercase;
+  transition: all .2s;
+}
+.tab-btn.active { color:var(--cyan); border-bottom-color:var(--cyan); }
+.tab-btn:hover { color:var(--text); }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+
+/* ── CANVAS CHARTS ─────────────────────────── */
+canvas.chart { width:100%; height:120px; display:block; margin:6px 0; border-radius:4px; background:rgba(0,0,0,.3); }
+canvas.chart-wide { width:100%; height:180px; }
+canvas.chart-tall { width:100%; height:100%; }
+.chart-label { font-size:9px; color:var(--dim); text-transform:uppercase; letter-spacing:1px; margin:8px 0 3px; }
+
+/* ── ALERT BADGE ───────────────────────────── */
+.alert-badge {
+  display:inline-block; padding:3px 8px; border-radius:3px;
+  font-family:var(--mono); font-size:10px; font-weight:700;
+}
+.alert-badge.ok { background:rgba(57,255,20,.12); color:var(--green); }
+.alert-badge.warn { background:rgba(255,58,58,.12); color:var(--red); animation: blink .7s infinite; }
+
+/* ── SCROLLBAR ─────────────────────────────── */
+::-webkit-scrollbar { width:4px; }
+::-webkit-scrollbar-track { background:transparent; }
+::-webkit-scrollbar-thumb { background:var(--border); border-radius:2px; }
+
+/* ── BOTTOM STRIP ──────────────────────────── */
+.strip-panel { flex:1; padding:10px 14px; border-right:1px solid var(--border); overflow:hidden; }
+.strip-panel:last-child { border-right:none; }
+</style>
+</head>
+<body>
+<div id="app">
+
+<!-- ═══════ LEFT PANEL — H₂ Plant HUD ═══════ -->
+<div id="left-panel" class="panel">
+  <div class="panel-header"><span>H₂ Plant Master Twin</span><span class="live-dot">● LIVE</span></div>
+
+  <div class="section-label">Energy Matrix</div>
+  <div class="stat">Wind Generation <span class="val"><span id="pwr-txt">0</span><span class="unit">kW</span></span></div>
+  <div class="stat">System Load <span class="val cyan" id="load-txt">0%</span></div>
+  <div class="bar-track"><div class="bar-fill cyan" id="load-fill" style="width:0%"></div></div>
+
+  <div class="section-label">Hardware Telemetry</div>
+  <div class="stat">Control Module <span class="val cyan">NOMINAL</span></div>
+  <div class="stat">Cooling System <span class="val" id="cool-stat">OPTIMAL</span></div>
+  <div class="stat">Purification <span class="val cyan">ACTIVE</span></div>
+  <div class="stat">Compressor Bank <span class="val cyan">TRIPLE-SYNC</span></div>
+
+  <div class="section-label">Electrolyzer</div>
+  <div class="stat">Efficiency <span class="val"><span id="eff-txt">72.00</span><span class="unit">%</span></span></div>
+  <div class="bar-track"><div class="bar-fill green" id="eff-fill" style="width:72%"></div></div>
+  <div class="stat">H₂ Rate <span class="val"><span id="h2rate-txt">0.00</span><span class="unit">kg/h</span></span></div>
+  <div class="stat">Operating Hours <span class="val purple"><span id="ophrs-txt">0</span><span class="unit">h</span></span></div>
+
+  <div class="section-label">Storage Inventory</div>
+  <div class="stat">Stored H₂ <span class="val"><span id="h2-txt">0.00</span><span class="unit">kg</span></span></div>
+  <div class="bar-track"><div class="bar-fill green" id="h2-fill" style="width:0%"></div></div>
+  <div class="stat">Tank Capacity <span class="val amber">2000<span class="unit">kg</span></span></div>
+
+  <div class="section-label">Production Chart</div>
+  <canvas class="chart" id="h2-chart" height="120"></canvas>
+
+  <div class="section-label">IoT Sensor Monitor</div>
+  <div class="stat">Temperature <span class="val"><span id="temp-txt">25.0</span><span class="unit">°C</span></span></div>
+  <div class="stat">Light Level <span class="val amber"><span id="light-txt">5.0</span><span class="unit">/10</span></span></div>
+  <div class="stat">LED Actuator <span id="led-badge" class="alert-badge ok">OFF</span></div>
+  <div class="stat">Classification <span class="val cyan" id="class-txt">medium</span></div>
+  <div class="stat">Stack Depth <span class="val purple" id="stack-txt">0</span></div>
+  <canvas class="chart" id="iot-chart" height="120"></canvas>
+</div>
+
+<!-- ═══════ CENTER — Cesium 3D ═══════ -->
+<div id="cesiumContainer"></div>
+
+<!-- ═══════ RIGHT PANEL — DSP + FFT ═══════ -->
+<div id="right-panel" class="panel">
+  <div class="panel-header"><span>Signal Processing</span><span class="live-dot">● LIVE</span></div>
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="dsp">DSP / AM</button>
+    <button class="tab-btn" data-tab="fft">FFT</button>
+    <button class="tab-btn" data-tab="radar">Radar</button>
+  </div>
+
+  <!-- DSP TAB -->
+  <div class="tab-content active" id="tab-dsp">
+    <div class="section-label">AM Modulation Pipeline</div>
+    <div class="chart-label">Modulating Signal m(t)</div>
+    <canvas class="chart" id="dsp-mod" height="100"></canvas>
+    <div class="chart-label">Carrier Signal c(t)</div>
+    <canvas class="chart" id="dsp-carrier" height="100"></canvas>
+    <div class="chart-label">AM Modulated + Noise</div>
+    <canvas class="chart" id="dsp-am" height="100"></canvas>
+    <div class="chart-label">Recovered (Envelope + LPF)</div>
+    <canvas class="chart" id="dsp-recovered" height="100"></canvas>
+
+    <div class="section-label">Signal Statistics</div>
+    <div class="stat">AM Noisy RMS <span class="val" id="dsp-rms1">—</span></div>
+    <div class="stat">Recovered RMS <span class="val" id="dsp-rms2">—</span></div>
+    <div class="stat">SNR <span class="val amber" id="dsp-snr">—<span class="unit">dB</span></span></div>
+  </div>
+
+  <!-- FFT TAB -->
+  <div class="tab-content" id="tab-fft">
+    <div class="section-label">Frequency Spectrum</div>
+    <canvas class="chart chart-wide" id="fft-spectrum" height="180"></canvas>
+
+    <div class="section-label">Anomaly Detection</div>
+    <div class="stat">Dominant Freq <span class="val cyan" id="fft-dom">—<span class="unit">Hz</span></span></div>
+    <div class="stat">Magnitude <span class="val" id="fft-mag">—</span></div>
+    <div class="stat">Alert Status <span id="fft-alert" class="alert-badge ok">CLEAR</span></div>
+    <div class="stat">Peaks Detected <span class="val purple" id="fft-peaks">0</span></div>
+
+    <div class="chart-label">Time Domain Signal</div>
+    <canvas class="chart" id="fft-time" height="100"></canvas>
+  </div>
+
+  <!-- RADAR TAB -->
+  <div class="tab-content" id="tab-radar">
+    <div class="section-label">Radar Signal Processing</div>
+    <div class="chart-label">Raw Radar Signal</div>
+    <canvas class="chart" id="radar-raw" height="100"></canvas>
+    <div class="chart-label">DC-Blocked & Resampled</div>
+    <canvas class="chart" id="radar-proc" height="100"></canvas>
+    <div class="chart-label">Amplified + Gated Output</div>
+    <canvas class="chart" id="radar-gated" height="100"></canvas>
+
+    <div class="section-label">Component Chain</div>
+    <div class="stat">Amplifier Gain <span class="val">2.0×</span></div>
+    <div class="stat">Gate Threshold <span class="val amber">0.20</span></div>
+    <div class="stat">Radar RMS <span class="val" id="radar-rms">—</span></div>
+    <div class="stat">Final RMS <span class="val" id="radar-frms">—</span></div>
+  </div>
+</div>
+
+<!-- ═══════ BOTTOM STRIP — Live Oscilloscopes ═══════ -->
+<div id="bottom-strip">
+  <div class="strip-panel">
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">Electrolyzer Power Scope</div>
+    <canvas class="chart-tall" id="scope-power"></canvas>
+  </div>
+  <div class="strip-panel">
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">DSP Live Waveform</div>
+    <canvas class="chart-tall" id="scope-dsp"></canvas>
+  </div>
+  <div class="strip-panel">
+    <div style="font-size:9px;color:var(--dim);letter-spacing:1.5px;text-transform:uppercase;margin-bottom:4px">FFT Spectrum Bars</div>
+    <canvas class="chart-tall" id="scope-fft"></canvas>
+  </div>
+</div>
+
+</div><!-- /app -->
+
+<script>
+// ═══════════════════════════════════════════════════════════
+//  SIMULATION STATE
+// ═══════════════════════════════════════════════════════════
+const S = {
+  time: 0, hour: 0,
+  // Hydrogen
+  power: 0, load: 0, efficiency: 0.72, degradation: 0.00002,
+  h2Rate: 0, h2Total: 0, storage: 0, storageCap: 2000, opHours: 0,
+  // IoT
+  temperature: 25, light: 5, ledState: false, iotClass: 'medium', stackDepth: 0,
+  // DSP (pre-computed buffers)
+  dsp: {}, fftData: {},
+  // Histories
+  h2Hist: [], powerHist: [], tempHist: [], lightHist: [],
+  // Position
+  base: { lon: -115.170, lat: 36.160 }
+};
+
+// ═══════════════════════════════════════════════════════════
+//  SIMULATION ENGINES (mirrors Python backend)
+// ═══════════════════════════════════════════════════════════
+
+// ── Renewable power ──
+function solarWindPower(hour) {
+  const h = hour % 24;
+  const solar = (h >= 6 && h <= 18) ? 400 * Math.sin(Math.PI * (h - 6) / 12) : 0;
+  const wind = 100 + Math.random() * 250 + (Math.random() - 0.5) * 60;
+  return Math.max(0, solar + wind);
+}
+
+// ── PEM Electrolyzer ──
+function electrolyzerStep(power) {
+  S.opHours++;
+  S.efficiency = Math.max(0.72 - S.degradation * S.opHours, 0.55);
+  const used = Math.min(500, Math.max(0, power));
+  S.h2Rate = (S.efficiency * used) / 33.33;
+  S.h2Total += S.h2Rate;
+  const actual = Math.min(S.h2Rate, S.storageCap - S.storage);
+  S.storage += actual;
+}
+
+// ── IoT Sensors ──
+const LEVEL_MAP = { 0:'very_low', 1:'low', 2:'medium', 3:'high' };
+function iotStep(hour) {
+  const h = hour % 24;
+  const diurnal = 5 * Math.sin(Math.PI * (h - 6) / 12);
+  S.temperature = 25 + diurnal + (Math.random() - 0.5);
+  S.light = (h >= 6 && h <= 18) ? 8 * Math.sin(Math.PI * (h - 6) / 12) + (Math.random() - 0.5) * 0.8 : 0.3 + Math.random() * 0.4;
+  S.light = Math.max(0, S.light);
+  S.ledState = S.temperature > 30 || S.light < 3;
+  S.iotClass = LEVEL_MAP[Math.min(3, Math.max(0, Math.floor(S.light / 2.5)))] || 'unknown';
+  S.stackDepth++;
+}
+
+// ── DSP Pipeline ──
+function generateDSP() {
+  const fs = 2000, dur = 0.25, fm = 10, fc = 200, sigma = 0.15;
+  const N = Math.floor(fs * dur);
+  const t = [], mod = [], car = [], am = [], noisy = [], env = [], rec = [];
+  const radarRaw = [], radarProc = [], gated = [];
+
+  for (let i = 0; i < N; i++) {
+    const ti = i / fs;
+    t.push(ti);
+    const m = Math.sin(2 * Math.PI * fm * ti);
+    const c = Math.sin(2 * Math.PI * fc * ti);
+    mod.push(m); car.push(c);
+    const s = (1 + m) * c;
+    am.push(s);
+    const n = s + sigma * (Math.random() * 2 - 1 + Math.random() * 2 - 1); // approx gaussian
+    noisy.push(n);
+    env.push(Math.abs(n));
+    // Radar
+    const r = Math.sin(2 * Math.PI * 80 * ti);
+    radarRaw.push(r);
+  }
+  // Simple moving average as LPF for recovered
+  const win = 40;
+  for (let i = 0; i < N; i++) {
+    let sum = 0, cnt = 0;
+    for (let j = Math.max(0, i - win); j <= i; j++) { sum += env[j]; cnt++; }
+    rec.push(sum / cnt);
+  }
+  // Radar DC block + gate
+  const rMean = radarRaw.reduce((a, b) => a + b, 0) / N;
+  for (let i = 0; i < N; i++) {
+    const clean = radarRaw[i] - rMean;
+    radarProc.push(clean);
+    gated.push(Math.abs(clean * 2) > 0.2 ? clean * 2 : 0);
+  }
+  // Stats
+  const rms = (arr) => Math.sqrt(arr.reduce((s, v) => s + v * v, 0) / arr.length);
+  S.dsp = { t, mod, car, am: noisy, rec, radarRaw, radarProc, gated,
+    rmsNoisy: rms(noisy), rmsRec: rms(rec), rmsRadar: rms(radarProc), rmsFinal: rms(gated) };
+}
+
+// ── FFT Analysis ──
+function fft(re, im) {
+  const N = re.length;
+  if (N <= 1) return;
+  const hN = N / 2;
+  const reE = [], imE = [], reO = [], imO = [];
+  for (let i = 0; i < hN; i++) {
+    reE.push(re[i * 2]); imE.push(im[i * 2]);
+    reO.push(re[i * 2 + 1]); imO.push(im[i * 2 + 1]);
+  }
+  fft(reE, imE); fft(reO, imO);
+  for (let k = 0; k < hN; k++) {
+    const angle = -2 * Math.PI * k / N;
+    const cos = Math.cos(angle), sin = Math.sin(angle);
+    const tRe = cos * reO[k] - sin * imO[k];
+    const tIm = sin * reO[k] + cos * imO[k];
+    re[k] = reE[k] + tRe; im[k] = imE[k] + tIm;
+    re[k + hN] = reE[k] - tRe; im[k + hN] = imE[k] - tIm;
+  }
+}
+
+function generateFFT() {
+  const N = 256, sr = 100;
+  const sig = [], re = [], im = [];
+  const anomalyActive = (S.hour % 30) > 20; // anomaly every ~30 hours for 10 hours
+  for (let i = 0; i < N; i++) {
+    const ti = i / sr;
+    let v = Math.sin(2 * Math.PI * 5 * ti) + 0.3 * Math.sin(2 * Math.PI * 12 * ti);
+    if (anomalyActive) v += 0.7 * Math.sin(2 * Math.PI * 35 * ti);
+    v += (Math.random() - 0.5) * 0.2;
+    sig.push(v); re.push(v); im.push(0);
+  }
+  fft(re, im);
+  const mags = [], freqs = [];
+  for (let i = 0; i < N / 2; i++) {
+    mags.push(Math.sqrt(re[i] * re[i] + im[i] * im[i]) * 2 / N);
+    freqs.push(i * sr / N);
+  }
+  let domIdx = 0, domMag = 0;
+  const peaks = [];
+  for (let i = 1; i < mags.length; i++) {
+    if (mags[i] > domMag) { domMag = mags[i]; domIdx = i; }
+    if (mags[i] > 0.08) peaks.push({ freq: freqs[i], mag: mags[i], anomaly: freqs[i] > 15 });
+  }
+  const anomalies = peaks.filter(p => p.anomaly);
+  S.fftData = { sig, mags, freqs, domFreq: freqs[domIdx], domMag, peaks, anomalies, alert: anomalies.length > 0 };
+}
+
+// ═══════════════════════════════════════════════════════════
+//  CANVAS DRAWING UTILITIES
+// ═══════════════════════════════════════════════════════════
+function drawLine(ctx, data, color, w, h, opts = {}) {
+  if (!data || data.length < 2) return;
+  const { yMin, yMax, filled } = opts;
+  let mn = yMin ?? Math.min(...data), mx = yMax ?? Math.max(...data);
+  if (mn === mx) { mn -= 1; mx += 1; }
+  ctx.beginPath();
+  for (let i = 0; i < data.length; i++) {
+    const x = (i / (data.length - 1)) * w;
+    const y = h - ((data[i] - mn) / (mx - mn)) * h;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  }
+  if (filled) {
+    ctx.lineTo(w, h); ctx.lineTo(0, h); ctx.closePath();
+    ctx.fillStyle = color.replace('1)', '0.12)');
+    ctx.fill();
+  }
+  ctx.strokeStyle = color; ctx.lineWidth = 1.2; ctx.stroke();
+}
+
+function drawBars(ctx, data, color, w, h, highlightFn) {
+  if (!data || data.length < 2) return;
+  const mx = Math.max(...data, 0.01);
+  const bw = w / data.length;
+  for (let i = 0; i < data.length; i++) {
+    const bh = (data[i] / mx) * h * 0.9;
+    const c = (highlightFn && highlightFn(i)) ? 'rgba(255,58,58,0.9)' : color;
+    ctx.fillStyle = c;
+    ctx.fillRect(i * bw, h - bh, Math.max(1, bw - 1), bh);
+  }
+}
+
+function clearCanvas(canvas) {
+  const ctx = canvas.getContext('2d');
+  const r = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w * r || canvas.height !== h * r) {
+    canvas.width = w * r; canvas.height = h * r;
+    ctx.scale(r, r);
+  }
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+function drawGrid(ctx, w, h, cols = 8, rows = 4) {
+  ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 0.5;
+  for (let i = 1; i < cols; i++) { ctx.beginPath(); ctx.moveTo(w * i / cols, 0); ctx.lineTo(w * i / cols, h); ctx.stroke(); }
+  for (let i = 1; i < rows; i++) { ctx.beginPath(); ctx.moveTo(0, h * i / rows); ctx.lineTo(w, h * i / rows); ctx.stroke(); }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  RENDERING
+// ═══════════════════════════════════════════════════════════
+function renderH2Chart() {
+  const { ctx, w, h } = clearCanvas(document.getElementById('h2-chart'));
+  drawGrid(ctx, w, h);
+  drawLine(ctx, S.powerHist.slice(-80), 'rgba(255,190,11,1)', w, h, { filled: true });
+  drawLine(ctx, S.h2Hist.slice(-80), 'rgba(57,255,20,1)', w, h, { filled: false });
+}
+
+function renderIoTChart() {
+  const { ctx, w, h } = clearCanvas(document.getElementById('iot-chart'));
+  drawGrid(ctx, w, h);
+  drawLine(ctx, S.tempHist.slice(-80), 'rgba(255,58,58,1)', w, h, { yMin: 15, yMax: 40 });
+  drawLine(ctx, S.lightHist.slice(-80).map(v => v * 3), 'rgba(255,190,11,1)', w, h, { yMin: 0, yMax: 30 });
+}
+
+function renderDSP() {
+  if (!S.dsp.t) return;
+  const ds = 3; // show every 3rd sample
+  const sl = (arr) => { const r = []; for (let i = 0; i < arr.length; i += ds) r.push(arr[i]); return r; };
+
+  ['dsp-mod', 'dsp-carrier', 'dsp-am', 'dsp-recovered'].forEach((id, idx) => {
+    const { ctx, w, h } = clearCanvas(document.getElementById(id));
+    drawGrid(ctx, w, h, 10, 3);
+    const data = [S.dsp.mod, S.dsp.car, S.dsp.am, S.dsp.rec][idx];
+    const colors = ['rgba(0,242,255,1)', 'rgba(179,136,255,1)', 'rgba(255,190,11,1)', 'rgba(57,255,20,1)'];
+    drawLine(ctx, sl(data), colors[idx], w, h, { filled: idx === 3 });
+  });
+  document.getElementById('dsp-rms1').textContent = S.dsp.rmsNoisy?.toFixed(4) || '—';
+  document.getElementById('dsp-rms2').textContent = S.dsp.rmsRec?.toFixed(4) || '—';
+  const snr = S.dsp.rmsRec && S.dsp.rmsNoisy ? (20 * Math.log10(S.dsp.rmsRec / (S.dsp.rmsNoisy - S.dsp.rmsRec + 0.001))).toFixed(1) : '—';
+  document.getElementById('dsp-snr').textContent = snr;
+}
+
+function renderFFT() {
+  if (!S.fftData.mags) return;
+  // Spectrum bars
+  const { ctx: ctx1, w: w1, h: h1 } = clearCanvas(document.getElementById('fft-spectrum'));
+  drawGrid(ctx1, w1, h1, 10, 4);
+  drawBars(ctx1, S.fftData.mags, 'rgba(0,242,255,0.7)', w1, h1, (i) => S.fftData.freqs[i] > 15 && S.fftData.mags[i] > 0.08);
+  // Threshold line
+  ctx1.strokeStyle = 'rgba(255,58,58,0.4)'; ctx1.lineWidth = 1; ctx1.setLineDash([4, 4]);
+  const threshX = (15 / 50) * w1;
+  ctx1.beginPath(); ctx1.moveTo(threshX, 0); ctx1.lineTo(threshX, h1); ctx1.stroke();
+  ctx1.setLineDash([]);
+  ctx1.fillStyle = 'rgba(255,58,58,0.6)'; ctx1.font = '9px JetBrains Mono'; ctx1.fillText('15 Hz threshold', threshX + 4, 12);
+
+  // Time domain
+  const { ctx: ctx2, w: w2, h: h2 } = clearCanvas(document.getElementById('fft-time'));
+  drawGrid(ctx2, w2, h2);
+  drawLine(ctx2, S.fftData.sig, S.fftData.alert ? 'rgba(255,58,58,1)' : 'rgba(0,242,255,1)', w2, h2);
+
+  // Stats
+  document.getElementById('fft-dom').textContent = S.fftData.domFreq?.toFixed(1) || '—';
+  document.getElementById('fft-mag').textContent = S.fftData.domMag?.toFixed(4) || '—';
+  document.getElementById('fft-peaks').textContent = S.fftData.peaks?.length || 0;
+  const badge = document.getElementById('fft-alert');
+  badge.textContent = S.fftData.alert ? 'ANOMALY' : 'CLEAR';
+  badge.className = 'alert-badge ' + (S.fftData.alert ? 'warn' : 'ok');
+}
+
+function renderRadar() {
+  if (!S.dsp.radarRaw) return;
+  const ds = 2;
+  const sl = (arr) => { const r = []; for (let i = 0; i < arr.length; i += ds) r.push(arr[i]); return r; };
+  [['radar-raw', S.dsp.radarRaw, 'rgba(179,136,255,1)'],
+   ['radar-proc', S.dsp.radarProc, 'rgba(0,242,255,1)'],
+   ['radar-gated', S.dsp.gated, 'rgba(57,255,20,1)']].forEach(([id, data, col]) => {
+    const { ctx, w, h } = clearCanvas(document.getElementById(id));
+    drawGrid(ctx, w, h, 10, 3);
+    drawLine(ctx, sl(data), col, w, h);
+  });
+  document.getElementById('radar-rms').textContent = S.dsp.rmsRadar?.toFixed(4) || '—';
+  document.getElementById('radar-frms').textContent = S.dsp.rmsFinal?.toFixed(4) || '—';
+}
+
+// ── Bottom strip scopes ──
+const scopePowerBuf = [], scopeDspBuf = [];
+function renderScopes() {
+  // Power scope
+  scopePowerBuf.push(S.power);
+  if (scopePowerBuf.length > 200) scopePowerBuf.shift();
+  const { ctx: c1, w: w1, h: h1 } = clearCanvas(document.getElementById('scope-power'));
+  drawGrid(c1, w1, h1, 10, 3);
+  drawLine(c1, scopePowerBuf, 'rgba(0,242,255,1)', w1, h1, { yMin: 0, yMax: 1400, filled: true });
+
+  // DSP scope — show last chunk of AM signal
+  if (S.dsp.am) {
+    const chunk = S.dsp.am.slice(-200);
+    const { ctx: c2, w: w2, h: h2 } = clearCanvas(document.getElementById('scope-dsp'));
+    drawGrid(c2, w2, h2, 10, 3);
+    drawLine(c2, chunk, 'rgba(255,190,11,1)', w2, h2);
+  }
+
+  // FFT scope
+  if (S.fftData.mags) {
+    const { ctx: c3, w: w3, h: h3 } = clearCanvas(document.getElementById('scope-fft'));
+    drawBars(c3, S.fftData.mags.slice(0, 64), 'rgba(0,242,255,0.6)', w3, h3,
+      (i) => S.fftData.freqs[i] > 15 && S.fftData.mags[i] > 0.08);
+  }
+}
+
+// ═══════════════════════════════════════════════════════════
+//  TABS
+// ═══════════════════════════════════════════════════════════
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════
+//  CESIUM 3D SCENE
+// ═══════════════════════════════════════════════════════════
+const viewer = new Cesium.Viewer("cesiumContainer", {
+  animation: false, timeline: false, infoBox: false, selectionIndicator: false,
+  baseLayerPicker: true, sceneModePicker: false, navigationHelpButton: false,
+  terrainProvider: null
+});
+
+function getPos(dLon, dLat, h = 0) {
+  return Cesium.Cartesian3.fromDegrees(S.base.lon + dLon, S.base.lat + dLat, h);
+}
+
+// Ground platform
+viewer.entities.add({
+  position: getPos(0, 0, 0.2),
+  rectangle: {
+    coordinates: Cesium.Rectangle.fromDegrees(S.base.lon - 0.022, S.base.lat - 0.014, S.base.lon + 0.028, S.base.lat + 0.014),
+    material: Cesium.Color.fromCssColorString('#0a0a0a').withAlpha(0.9),
+    outline: true, outlineColor: Cesium.Color.CYAN, outlineWidth: 2
+  }
+});
+
+// Wind Turbines
+function createWindTurbine(dLon, dLat) {
+  const height = 80;
+  const hubPos = getPos(dLon, dLat, height);
+  viewer.entities.add({ position: getPos(dLon, dLat, height / 2), cylinder: { length: height, topRadius: 1.5, bottomRadius: 4, material: Cesium.Color.WHITE } });
+  const hub = viewer.entities.add({
+    position: hubPos,
+    orientation: new Cesium.CallbackProperty(() => {
+      return Cesium.Transforms.headingPitchRollQuaternion(hubPos, new Cesium.HeadingPitchRoll(0, 0, S.time * (S.load + 0.2) * 5));
+    }, false),
+    ellipsoid: { radii: new Cesium.Cartesian3(3, 3, 3), material: Cesium.Color.LIGHTGRAY }
+  });
+  for (let i = 0; i < 3; i++) {
+    const rot = (Math.PI * 2 / 3) * i;
+    viewer.entities.add({
+      parent: hub,
+      polyline: { positions: new Cesium.CallbackProperty(() => {
+        const angle = S.time * (S.load + 0.2) * 5 + rot;
+        return [hubPos, Cesium.Cartesian3.fromDegrees(S.base.lon + dLon + Math.cos(angle) * 0.0006, S.base.lat + dLat + Math.sin(angle) * 0.0006, height)];
+      }, false), width: 8, material: Cesium.Color.WHITE }
+    });
+  }
+}
+createWindTurbine(-0.013, 0.008);
+createWindTurbine(-0.013, -0.002);
+createWindTurbine(-0.013, -0.012);
+
+// Master Control
+viewer.entities.add({
+  position: new Cesium.CallbackProperty(() => getPos(-0.004, -0.006, 5 + Math.sin(S.time * 15) * 0.1), false),
+  box: { dimensions: new Cesium.Cartesian3(45, 20, 15), material: Cesium.Color.DARKSLATEGRAY, outline: true, outlineColor: Cesium.Color.LIME },
+  label: { text: "MASTER CONTROL", font: '10pt monospace', pixelOffset: new Cesium.Cartesian2(0, -35) }
+});
+
+// PEM Electrolyzer (pulsing)
+viewer.entities.add({
+  position: getPos(0, 0, 15),
+  box: {
+    dimensions: new Cesium.CallbackProperty(() => {
+      const p = 1 + Math.sin(S.time * 3) * (S.load * 0.1);
+      return new Cesium.Cartesian3(35 * p, 45 * p, 30 * p);
+    }, false),
+    material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() => Cesium.Color.CYAN.withAlpha(0.3 + S.load * 0.5), false)),
+    outline: true, outlineColor: Cesium.Color.WHITE
+  },
+  label: { text: "PEM ELECTROLYZER", font: 'bold 12pt monospace', pixelOffset: new Cesium.Cartesian2(0, -60) }
+});
+
+// Cooling System
+viewer.entities.add({
+  position: new Cesium.CallbackProperty(() => getPos(0.004, 0.006, 10 + Math.sin(S.time * 12) * 0.5), false),
+  box: { dimensions: new Cesium.Cartesian3(35, 25, 20), material: Cesium.Color.DODGERBLUE.withAlpha(0.7), outline: true },
+  label: { text: "COOLING", font: '10pt monospace', pixelOffset: new Cesium.Cartesian2(0, -40) }
+});
+
+// Compressor Bank
+function createComp(dLon, dLat, id) {
+  viewer.entities.add({
+    position: getPos(dLon, dLat, 8),
+    box: {
+      dimensions: new Cesium.CallbackProperty(() => {
+        const p = 1 + Math.sin(S.time * 10 + id) * S.load * 0.15;
+        return new Cesium.Cartesian3(22 * p, 12, 12);
+      }, false),
+      material: Cesium.Color.SILVER, outline: true
+    },
+    label: { text: "C-" + id, font: '8pt monospace', pixelOffset: new Cesium.Cartesian2(0, -20) }
+  });
+}
+createComp(0.008, 0.003, 1);
+createComp(0.008, 0, 2);
+createComp(0.008, -0.003, 3);
+
+// Purification Tower
+viewer.entities.add({
+  position: new Cesium.CallbackProperty(() => getPos(0.012, -0.005, 20 + Math.sin(S.time * 2) * 1.5), false),
+  box: {
+    dimensions: new Cesium.CallbackProperty(() => { const s = 1 + Math.sin(S.time * 2) * 0.05; return new Cesium.Cartesian3(12 * s, 12 * s, 40); }, false),
+    material: Cesium.Color.GHOSTWHITE.withAlpha(0.8), outline: true, outlineColor: Cesium.Color.CYAN
+  },
+  label: { text: "PURIFICATION", font: '10pt monospace', pixelOffset: new Cesium.Cartesian2(0, -60) }
+});
+
+// Storage Tanks
+function createTank(dLon, dLat) {
+  viewer.entities.add({
+    position: getPos(dLon, dLat, 20),
+    ellipsoid: {
+      radii: new Cesium.CallbackProperty(() => {
+        const s = 25 + (S.storage / S.storageCap) * 15;
+        return new Cesium.Cartesian3(s, s, s * 1.4);
+      }, false),
+      material: Cesium.Color.LIME.withAlpha(0.6), outline: true
+    }
+  });
+}
+createTank(0.02, 0.006);
+createTank(0.02, -0.004);
+
+// ── NEW: IoT SENSOR STATION (3D box with LED indicator) ──
+viewer.entities.add({
+  position: getPos(-0.006, 0.009, 6),
+  box: { dimensions: new Cesium.Cartesian3(15, 15, 12), material: Cesium.Color.DARKGOLDENROD.withAlpha(0.7), outline: true, outlineColor: Cesium.Color.YELLOW },
+  label: { text: "IoT SENSORS", font: '9pt monospace', pixelOffset: new Cesium.Cartesian2(0, -30) }
+});
+// LED indicator sphere
+viewer.entities.add({
+  position: getPos(-0.006, 0.009, 15),
+  ellipsoid: {
+    radii: new Cesium.Cartesian3(4, 4, 4),
+    material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() =>
+      S.ledState ? Cesium.Color.RED.withAlpha(0.5 + Math.sin(S.time * 10) * 0.5) : Cesium.Color.GREEN.withAlpha(0.6)
+    , false))
+  }
+});
+
+// ── NEW: DSP SIGNAL LAB ──
+viewer.entities.add({
+  position: getPos(0.014, 0.009, 8),
+  box: {
+    dimensions: new Cesium.CallbackProperty(() => {
+      const p = 1 + Math.sin(S.time * 6) * 0.03;
+      return new Cesium.Cartesian3(25 * p, 18, 16);
+    }, false),
+    material: Cesium.Color.fromCssColorString('#1a0a3e').withAlpha(0.8), outline: true, outlineColor: Cesium.Color.fromCssColorString('#b388ff')
+  },
+  label: { text: "DSP SIGNAL LAB", font: '9pt monospace', fillColor: Cesium.Color.fromCssColorString('#b388ff'), pixelOffset: new Cesium.Cartesian2(0, -35) }
+});
+// Antenna dish
+viewer.entities.add({
+  position: getPos(0.014, 0.009, 20),
+  ellipsoid: { radii: new Cesium.Cartesian3(6, 6, 2), material: Cesium.Color.SILVER.withAlpha(0.8) }
+});
+viewer.entities.add({
+  position: getPos(0.014, 0.009, 16),
+  cylinder: { length: 8, topRadius: 0.8, bottomRadius: 0.8, material: Cesium.Color.GRAY }
+});
+
+// ── NEW: FFT ANALYSIS TOWER ──
+viewer.entities.add({
+  position: getPos(-0.006, -0.01, 18),
+  box: {
+    dimensions: new Cesium.CallbackProperty(() => {
+      const p = 1 + (S.fftData.alert ? Math.sin(S.time * 8) * 0.08 : 0);
+      return new Cesium.Cartesian3(14 * p, 14 * p, 36);
+    }, false),
+    material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() =>
+      S.fftData.alert ? Cesium.Color.RED.withAlpha(0.4 + Math.sin(S.time * 6) * 0.3) : Cesium.Color.DARKCYAN.withAlpha(0.7)
+    , false)),
+    outline: true, outlineColor: Cesium.Color.CYAN
+  },
+  label: { text: "FFT ANALYSIS", font: '9pt monospace', pixelOffset: new Cesium.Cartesian2(0, -55) }
+});
+// Pulsing ring around FFT tower when anomaly
+viewer.entities.add({
+  position: getPos(-0.006, -0.01, 36),
+  ellipsoid: {
+    radii: new Cesium.CallbackProperty(() => {
+      const r = S.fftData.alert ? 10 + Math.sin(S.time * 4) * 5 : 5;
+      return new Cesium.Cartesian3(r, r, 2);
+    }, false),
+    material: new Cesium.ColorMaterialProperty(new Cesium.CallbackProperty(() =>
+      S.fftData.alert ? Cesium.Color.RED.withAlpha(0.3 + Math.sin(S.time * 4) * 0.3) : Cesium.Color.CYAN.withAlpha(0.2)
+    , false))
+  }
+});
+
+// ── Flow paths ──
+function createFlow(start, end, color = Cesium.Color.AQUA) {
+  viewer.entities.add({
+    position: new Cesium.CallbackProperty(() => {
+      const t = (S.time * 0.4) % 1.0;
+      return Cesium.Cartesian3.lerp(start, end, t, new Cesium.Cartesian3());
+    }, false),
+    point: { pixelSize: 8, color, outlineColor: Cesium.Color.WHITE, outlineWidth: 1 }
+  });
+  viewer.entities.add({
+    polyline: { positions: [start, end], width: 2.5, material: new Cesium.PolylineGlowMaterialProperty({ color, glowPower: 0.15 }) }
+  });
+}
+// Main process chain
+createFlow(getPos(-0.013, 0, 10), getPos(-0.004, -0.006, 10), Cesium.Color.YELLOW);
+createFlow(getPos(-0.004, -0.006, 10), getPos(0, 0, 10));
+createFlow(getPos(0, 0, 10), getPos(0.004, 0.006, 10));
+createFlow(getPos(0.004, 0.006, 10), getPos(0.008, 0, 10));
+createFlow(getPos(0.008, 0, 10), getPos(0.012, -0.005, 10));
+createFlow(getPos(0.012, -0.005, 10), getPos(0.02, 0, 10));
+// IoT data flow
+createFlow(getPos(-0.006, 0.009, 6), getPos(-0.004, -0.006, 8), Cesium.Color.YELLOW);
+// DSP data flow
+createFlow(getPos(0.014, 0.009, 8), getPos(-0.004, -0.006, 8), Cesium.Color.fromCssColorString('#b388ff'));
+// FFT data flow
+createFlow(getPos(-0.006, -0.01, 10), getPos(-0.004, -0.006, 8), Cesium.Color.DARKCYAN);
+
+// Camera
+viewer.camera.flyTo({
+  destination: Cesium.Cartesian3.fromDegrees(S.base.lon, S.base.lat - 0.032, 1100),
+  orientation: { pitch: Cesium.Math.toRadians(-35), heading: 0 },
+  duration: 3
+});
+
+// ═══════════════════════════════════════════════════════════
+//  MAIN LOOP
+// ═══════════════════════════════════════════════════════════
+let frameCount = 0;
+viewer.clock.onTick.addEventListener(() => {
+  S.time += 0.04;
+  frameCount++;
+
+  // Every ~25 frames ≈ 1 simulated hour
+  if (frameCount % 25 === 0) {
+    S.hour++;
+    iotStep(S.hour);
+    S.tempHist.push(S.temperature);
+    S.lightHist.push(S.light);
+    if (S.tempHist.length > 200) { S.tempHist.shift(); S.lightHist.shift(); }
+  }
+
+  // Continuous physics
+  S.power = solarWindPower(S.hour + (frameCount % 25) / 25);
+  S.load = Math.min(1.0, S.power / 1400);
+  electrolyzerStep(S.power);
+  S.powerHist.push(S.power);
+  S.h2Hist.push(S.h2Rate);
+  if (S.powerHist.length > 200) { S.powerHist.shift(); S.h2Hist.shift(); }
+
+  // Regenerate DSP & FFT periodically
+  if (frameCount % 60 === 0) { generateDSP(); generateFFT(); }
+
+  // ── UPDATE HUD ──
+  document.getElementById('pwr-txt').textContent = Math.round(S.power);
+  document.getElementById('load-txt').textContent = (S.load * 100).toFixed(1) + '%';
+  document.getElementById('load-fill').style.width = (S.load * 100) + '%';
+  document.getElementById('eff-txt').textContent = (S.efficiency * 100).toFixed(2);
+  document.getElementById('eff-fill').style.width = (S.efficiency * 100) + '%';
+  document.getElementById('h2rate-txt').textContent = S.h2Rate.toFixed(3);
+  document.getElementById('ophrs-txt').textContent = S.opHours;
+  document.getElementById('h2-txt').textContent = S.storage.toFixed(2);
+  document.getElementById('h2-fill').style.width = ((S.storage / S.storageCap) * 100) + '%';
+  document.getElementById('temp-txt').textContent = S.temperature.toFixed(1);
+  document.getElementById('light-txt').textContent = S.light.toFixed(2);
+  document.getElementById('stack-txt').textContent = S.stackDepth;
+  document.getElementById('class-txt').textContent = S.iotClass;
+
+  const ledBadge = document.getElementById('led-badge');
+  ledBadge.textContent = S.ledState ? 'ON' : 'OFF';
+  ledBadge.className = 'alert-badge ' + (S.ledState ? 'warn' : 'ok');
+
+  const coolStat = document.getElementById('cool-stat');
+  coolStat.style.color = S.load > 0.8 ? '#ff3a3a' : 'var(--green)';
+  coolStat.textContent = S.load > 0.8 ? 'HIGH LOAD' : 'OPTIMAL';
+
+  // ── Render charts every few frames ──
+  if (frameCount % 8 === 0) {
+    renderH2Chart();
+    renderIoTChart();
+    renderScopes();
+  }
+  if (frameCount % 60 === 0) {
+    renderDSP();
+    renderFFT();
+    renderRadar();
+  }
+});
+
+// Initial generation
+generateDSP(); generateFFT();
+setTimeout(() => { renderDSP(); renderFFT(); renderRadar(); }, 500);
+</script>
+</body>
+</html>
